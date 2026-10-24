@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  # 1. Banco de Dados de Origem (PostgreSQL)
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: payments
+      POSTGRES_USER: cdc_user
+      POSTGRES_PASSWORD: cdc_password
+    ports:
+      - "5432:5432"
+    command: ["postgres", "-c", "wal_level=logical"]
+
+  # 2. Mensageria em Tempo Real (Kafka + ZooKeeper via Redpanda Redundant Single-Node)
+  kafka:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.3.11
+    container_name: kafka
+    command:
+      - redpanda
+      - start
+      - --smp
+      - '1'
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - '0'
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://kafka:29092,OUTSIDE://localhost:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+
+  # 3. Contrato de Dados (Schema Registry)
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    container_name: schema-registry
+    depends_on:
+      - kafka
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'kafka:29092'
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+
+  # 4. Ingestão e Captura de Mudanças (CDC Debezium)
+  connect:
+    image: debezium/connect:2.4
+    container_name: connect
+    ports:
+      - "8083:8083"
+    depends_on:
+      - kafka
+      - postgres
+    environment:
+      BOOTSTRAP_SERVERS: 'kafka:29092'
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: my_connect_configs
+      OFFSET_STORAGE_TOPIC: my_connect_offsets
+      STATUS_STORAGE_TOPIC: my_connect_statuses
+      KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      KEY_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
+      VALUE_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
